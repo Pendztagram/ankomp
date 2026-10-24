@@ -1,5 +1,6 @@
 """Tech Repair Analyzer - analisa kerusakan komputer/laptop (hardware & software)."""
 import re
+import base64
 import datetime as dt
 
 import pandas as pd
@@ -241,7 +242,7 @@ with st.sidebar:
     st.info("Hasil adalah panduan awal. Estimasi biaya kasar & bervariasi per kota.")
 
 st.title("🛠️ Tech Repair Analyzer")
-tabs = st.tabs(["🩺 Diagnosa Gejala", "📜 Analisa Log", "📊 Skor Kesehatan", "🖥️ Monitor Live", "📚 Referensi", "📝 Laporan"])
+tabs = st.tabs(["🩺 Diagnosa Gejala", "🤖 Tanya AI", "📜 Analisa Log", "📊 Skor Kesehatan", "🖥️ Monitor Live", "📚 Referensi", "📝 Laporan"])
 
 # ---------------------------------------------------------------- TAB 1
 with tabs[0]:
@@ -281,8 +282,91 @@ with tabs[0]:
     else:
         st.info("Pilih minimal satu gejala untuk memulai diagnosa.")
 
-# ---------------------------------------------------------------- TAB 2
+
+# ---------------------------------------------------------------- TAB AI
+AI_SYSTEM = """Kamu adalah teknisi komputer & laptop senior (hardware dan software) yang berbicara dalam Bahasa Indonesia yang jelas.
+Aturan:
+- Analisa keluhan pengguna secara bebas, tidak terpaku pada daftar tetap. Jika info kurang, ajukan maksimal 3 pertanyaan klarifikasi yang paling penting.
+- Format jawaban: (1) Dugaan penyebab berurut dari paling mungkin + alasan, (2) Tes untuk membedakan penyebab, (3) Langkah perbaikan bertahap dari yang paling aman, (4) Estimasi biaya kasar dalam Rupiah bila relevan, (5) Kapan harus ke teknisi.
+- Selalu ingatkan BACKUP DATA sebelum langkah berisiko (format, chkdsk /r, flash BIOS, bongkar perangkat).
+- Peringatkan bahaya keselamatan (baterai menggembung, listrik, cairan).
+- Bila memakai hasil pencarian web, sebutkan sumbernya secara singkat. Jangan mengarang perintah/kode error; katakan jika tidak yakin.
+- Jawaban ringkas, praktis, dan berurutan."""
+
+
+def build_context():
+    p = [f"Perangkat: {dev['type']} {dev['brand']}, OS {dev['os']}, storage {dev['storage']}, umur {dev['age']} tahun."]
+    if st.session_state.get("sel"):
+        p.append("Gejala terpilih di aplikasi: " + "; ".join(SYMPTOMS[x] for x in st.session_state["sel"]))
+    if st.session_state.get("diag"):
+        p.append("Dugaan sistem pakar: " + "; ".join(f"{r['name']} ({r['conf'] * 100:.0f}%)" for r in st.session_state["diag"][:3]))
+    if st.session_state.get("log"):
+        p.append("Temuan log: " + "; ".join(f"{f['title']} x{f['count']}" for f in st.session_state["log"][:6]))
+    if st.session_state.get("health"):
+        sc, ov = st.session_state["health"]
+        p.append(f"Skor kesehatan {ov}/100: " + ", ".join(f"{k} {v}" for k, v in sc.items()))
+    return "\n".join(p)
+
+
+def stream_ai(client, model, messages, web):
+    kw = dict(model=model, max_tokens=2500, system=AI_SYSTEM, messages=messages)
+    if web:
+        kw["tools"] = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 4}]
+    with client.messages.stream(**kw) as stream:
+        for t in stream.text_stream:
+            yield t
+
+
 with tabs[1]:
+    st.subheader("🤖 Tanya AI Teknisi")
+    st.caption("Ceritakan keluhan dengan bahasa bebas. AI menganalisa dan bisa mencari solusi terbaru di internet.")
+    api_key = safe(lambda: st.secrets["ANTHROPIC_API_KEY"], "")
+    if not api_key:
+        api_key = st.text_input("Anthropic API key", type="password",
+                                help="Dapatkan di console.anthropic.com. Untuk deploy permanen, simpan di Streamlit Secrets, jangan di GitHub.")
+    o1, o2, o3 = st.columns([2, 2, 2])
+    model = o1.text_input("Model", safe(lambda: st.secrets["ANTHROPIC_MODEL"], "claude-sonnet-5-5"))
+    use_web = o2.toggle("🌐 Cari solusi di internet", True)
+    use_ctx = o3.toggle("Sertakan hasil diagnosa/log/skor", True)
+    shot = st.file_uploader("Foto/screenshot error (opsional)", type=["png", "jpg", "jpeg", "webp"])
+    if "chat" not in st.session_state:
+        st.session_state["chat"] = []
+    if st.button("🗑️ Mulai percakapan baru"):
+        st.session_state["chat"] = []
+    for m in st.session_state["chat"]:
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
+    q = st.chat_input("Contoh: laptop saya mati sendiri setelah 10 menit main game, kipas kencang...")
+    if q:
+        if not api_key:
+            st.error("Masukkan API key terlebih dahulu.")
+        else:
+            try:
+                import anthropic
+                client = anthropic.Anthropic(api_key=api_key)
+                with st.chat_message("user"):
+                    st.markdown(q)
+                    if shot:
+                        st.image(shot, width=280)
+                text = (f"[Konteks perangkat]\n{build_context()}\n\n[Keluhan]\n{q}") if use_ctx else q
+                content = text
+                if shot:
+                    content = [{"type": "image", "source": {"type": "base64", "media_type": shot.type or "image/png",
+                                                            "data": base64.b64encode(shot.getvalue()).decode()}},
+                               {"type": "text", "text": text}]
+                msgs = st.session_state["chat"][-12:] + [{"role": "user", "content": content}]
+                with st.chat_message("assistant"):
+                    ans = st.write_stream(stream_ai(client, model, msgs, use_web))
+                st.session_state["chat"] += [{"role": "user", "content": q}, {"role": "assistant", "content": ans}]
+            except ImportError:
+                st.error("Modul `anthropic` belum terpasang. Pastikan ada di requirements.txt.")
+            except Exception as e:
+                st.error(f"Gagal menghubungi AI: {type(e).__name__}: {str(e)[:300]}")
+                if use_web:
+                    st.caption("Jika error terkait tool/web search, matikan toggle 🌐 lalu coba lagi.")
+
+# ---------------------------------------------------------------- TAB 2
+with tabs[2]:
     st.subheader("Analisa log otomatis")
     st.caption("Export Event Viewer (.txt/.csv/.evtx→teks), `dmesg`, `journalctl`, hasil `smartctl`, atau teks BSOD.")
     up = st.file_uploader("Upload file log", type=["txt", "log", "csv"])
@@ -303,7 +387,7 @@ with tabs[1]:
                     st.code("\n".join(f"L{n}: {l}" for n, l in f["samples"]), language="text")
 
 # ---------------------------------------------------------------- TAB 3
-with tabs[2]:
+with tabs[3]:
     st.subheader("Skor kesehatan perangkat")
     snap = st.session_state.get("snap", {})
     a, b, c = st.columns(3)
@@ -346,7 +430,7 @@ with tabs[2]:
         st.warning("Komponen perlu perhatian: " + ", ".join(weak))
 
 # ---------------------------------------------------------------- TAB 4
-with tabs[3]:
+with tabs[4]:
     st.subheader("Monitor live (mesin yang menjalankan aplikasi ini)")
     if psutil is None:
         st.error("Modul psutil belum terpasang: `pip install psutil`")
@@ -386,7 +470,7 @@ with tabs[3]:
         st.caption("Nilai RAM & disk otomatis dipakai sebagai default di tab Skor Kesehatan.")
 
 # ---------------------------------------------------------------- TAB 5
-with tabs[4]:
+with tabs[5]:
     st.subheader("Referensi cepat")
     r1, r2 = st.tabs(["Kode BSOD", "Beep code BIOS"])
     bsod = pd.DataFrame([
@@ -433,7 +517,7 @@ with tabs[4]:
     ], columns=["OS", "Perintah", "Fungsi"]), hide_index=True, use_container_width=True)
 
 # ---------------------------------------------------------------- TAB 6
-with tabs[5]:
+with tabs[6]:
     st.subheader("Laporan diagnosa")
     now = dt.datetime.now().strftime("%d %B %Y %H:%M")
     md = [f"# Laporan Diagnosa Perangkat\n_{now}_\n",
@@ -453,6 +537,9 @@ with tabs[5]:
     if st.session_state.get("health"):
         sc, ov = st.session_state["health"]
         md.append(f"\n## Skor kesehatan: {ov}/100 ({verdict(ov)[0]})\n" + "\n".join(f"- {k}: {v}/100" for k, v in sc.items()))
+    if st.session_state.get("chat"):
+        last = [m for m in st.session_state["chat"] if m["role"] == "assistant"][-1]["content"]
+        md.append("\n## Saran AI Teknisi (terakhir)\n" + last)
     report = "\n".join(md)
     st.markdown(report)
     st.download_button("⬇️ Unduh laporan (.md)", report, file_name="laporan_diagnosa.md", mime="text/markdown")

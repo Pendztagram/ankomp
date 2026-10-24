@@ -28,3 +28,15 @@ streamlit run app.py
 Edit list `RULES` di `app.py` (bobot gejala `s`, langkah `fix`, estimasi biaya `cost`).
 
 > Hasil bersifat panduan awal, bukan pengganti pemeriksaan teknisi langsung. Estimasi biaya bersifat kasar.
+
+## 🤖 Tab Tanya AI (opsional)
+Chat bebas dengan AI teknisi (Claude) + pencarian solusi di internet.
+1. Buat API key di https://console.anthropic.com
+2. Lokal: buat `.streamlit/secrets.toml` (sudah di-.gitignore):
+   ```toml
+   ANTHROPIC_API_KEY = "sk-ant-..."
+   ```
+3. Streamlit Cloud: **Manage app → Settings → Secrets**, isi baris yang sama.
+4. Model bisa diganti lewat secret `ANTHROPIC_MODEL` atau kolom Model di tab.
+
+> Penggunaan API berbayar per pemakaian. Jangan pernah commit API key ke GitHub.
