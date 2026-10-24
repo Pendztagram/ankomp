@@ -189,6 +189,14 @@ def analyze_log(text: str):
     return sorted(res, key=lambda x: -x["count"])
 
 
+def safe(fn, default=None):
+    """Jalankan pembacaan sensor; kembalikan default bila tidak didukung (mis. di server cloud)."""
+    try:
+        return fn()
+    except Exception:
+        return default
+
+
 def clamp(x, lo=0, hi=100):
     return max(lo, min(hi, x))
 
@@ -345,8 +353,8 @@ with tabs[3]:
     else:
         st.caption("Jalankan app secara lokal di perangkat yang ingin dicek. Di cloud, data yang tampil adalah milik server.")
         if st.button("🔄 Refresh / ambil snapshot", type="primary") or "snap" not in st.session_state:
-            vm, du = psutil.virtual_memory(), psutil.disk_usage("/")
-            st.session_state["snap"] = dict(cpu=psutil.cpu_percent(interval=0.8), ram=vm.percent, disk=du.percent)
+            vm, du = psutil.virtual_memory(), safe(lambda: psutil.disk_usage("/"))
+            st.session_state["snap"] = dict(cpu=psutil.cpu_percent(interval=0.8), ram=vm.percent, disk=du.percent if du else 0)
         sn = st.session_state["snap"]
         vm, sw, du = psutil.virtual_memory(), psutil.swap_memory(), psutil.disk_usage("/")
         m = st.columns(4)
@@ -354,18 +362,19 @@ with tabs[3]:
         m[1].metric("RAM", f"{vm.percent:.0f}%", f"{vm.used / 2**30:.1f}/{vm.total / 2**30:.1f} GB", delta_color="off")
         m[2].metric("Swap", f"{sw.percent:.0f}%")
         m[3].metric("Disk /", f"{du.percent:.0f}%", f"{du.free / 2**30:.0f} GB bebas", delta_color="off")
-        bt = psutil.sensors_battery() if hasattr(psutil, "sensors_battery") else None
+        bt = safe(lambda: psutil.sensors_battery())
         if bt:
             st.info(f"🔋 Baterai {bt.percent:.0f}% — {'sedang dicas' if bt.power_plugged else 'memakai baterai'}")
-        temps = psutil.sensors_temperatures() if hasattr(psutil, "sensors_temperatures") else {}
+        temps = safe(lambda: psutil.sensors_temperatures(), {})
         if temps:
             rows = [dict(Sensor=n, Label=e.label or n, Suhu=e.current) for n, es in temps.items() for e in es]
             st.markdown("**Suhu sensor**")
             st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
         else:
             st.caption("Sensor suhu tidak tersedia di OS ini (Windows: gunakan HWiNFO / Core Temp).")
-        up_s = (dt.datetime.now() - dt.datetime.fromtimestamp(psutil.boot_time()))
-        st.caption(f"Uptime: {str(up_s).split('.')[0]}")
+        boot_ts = safe(lambda: psutil.boot_time())
+        if boot_ts:
+            st.caption(f"Uptime: {str(dt.datetime.now() - dt.datetime.fromtimestamp(boot_ts)).split('.')[0]}")
         procs = []
         for p in psutil.process_iter(["name", "memory_percent", "cpu_percent"]):
             try: procs.append(p.info)
