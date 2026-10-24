@@ -40,3 +40,8 @@ Chat bebas dengan AI teknisi (Claude) + pencarian solusi di internet.
 4. Model bisa diganti lewat secret `ANTHROPIC_MODEL` atau kolom Model di tab.
 
 > Penggunaan API berbayar per pemakaian. Jangan pernah commit API key ke GitHub.
+
+### Opsi gratis: Google Gemini
+1. Buat key gratis di https://aistudio.google.com/apikey (tanpa kartu kredit).
+2. Di Secrets isi `GEMINI_API_KEY = "AIza..."`.
+3. Pilih **Google Gemini (gratis)** di tab Tanya AI. Ada batas permintaan per menit/hari pada free tier.

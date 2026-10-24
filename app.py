@@ -317,15 +317,52 @@ def stream_ai(client, model, messages, web):
             yield t
 
 
+def gemini_chat(key, model, history, text, img, web):
+    """Panggil Gemini via REST (gratis lewat Google AI Studio). Return (teks, sumber, catatan)."""
+    import requests
+    contents = [{"role": "user" if m["role"] == "user" else "model", "parts": [{"text": m["content"]}]} for m in history]
+    parts = [{"text": text}]
+    if img:
+        parts.insert(0, {"inline_data": {"mime_type": img.type or "image/png", "data": base64.b64encode(img.getvalue()).decode()}})
+    contents.append({"role": "user", "parts": parts})
+    body = {"systemInstruction": {"parts": [{"text": AI_SYSTEM}]}, "contents": contents}
+    if web:
+        body["tools"] = [{"google_search": {}}]
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    hdr = {"x-goog-api-key": key, "Content-Type": "application/json"}
+    note = ""
+    r = requests.post(url, headers=hdr, json=body, timeout=90)
+    if r.status_code != 200 and web:  # coba ulang tanpa Google Search (mungkin tidak masuk free tier)
+        body.pop("tools")
+        r = requests.post(url, headers=hdr, json=body, timeout=90)
+        note = "Pencarian internet tidak tersedia untuk key/model ini, jawaban tanpa web search."
+    if r.status_code != 200:
+        try:
+            msg = r.json()["error"]["message"]
+        except Exception:
+            msg = r.text
+        raise RuntimeError(f"HTTP {r.status_code}: {msg[:300]}")
+    cand = r.json()["candidates"][0]
+    txt = "".join(p_.get("text", "") for p_ in cand.get("content", {}).get("parts", []))
+    chunks = cand.get("groundingMetadata", {}).get("groundingChunks", [])
+    src = [(c["web"].get("title", "sumber"), c["web"]["uri"]) for c in chunks if "web" in c]
+    return txt or "(AI tidak mengembalikan jawaban)", src, note
+
+
 with tabs[1]:
     st.subheader("🤖 Tanya AI Teknisi")
     st.caption("Ceritakan keluhan dengan bahasa bebas. AI menganalisa dan bisa mencari solusi terbaru di internet.")
-    api_key = safe(lambda: st.secrets["ANTHROPIC_API_KEY"], "")
+    prov = st.radio("Penyedia AI", ["Google Gemini (gratis)", "Anthropic Claude (berbayar)"], horizontal=True)
+    is_gem = prov.startswith("Google")
+    sec_name = "GEMINI_API_KEY" if is_gem else "ANTHROPIC_API_KEY"
+    api_key = safe(lambda: st.secrets[sec_name], "")
     if not api_key:
-        api_key = st.text_input("Anthropic API key", type="password",
-                                help="Dapatkan di console.anthropic.com. Untuk deploy permanen, simpan di Streamlit Secrets, jangan di GitHub.")
+        api_key = st.text_input(f"{'Gemini' if is_gem else 'Anthropic'} API key", type="password",
+                                help="Gemini: gratis di aistudio.google.com/apikey. Untuk deploy permanen simpan di Streamlit Secrets, jangan di GitHub.")
+        if is_gem:
+            st.caption("🔑 Ambil key gratis di https://aistudio.google.com/apikey (login Google, tanpa kartu kredit).")
     o1, o2, o3 = st.columns([2, 2, 2])
-    model = o1.text_input("Model", safe(lambda: st.secrets["ANTHROPIC_MODEL"], "claude-sonnet-5-5"))
+    model = o1.text_input("Model", "gemini-2.5-flash-lite" if is_gem else safe(lambda: st.secrets["ANTHROPIC_MODEL"], "claude-sonnet-5-5"))
     use_web = o2.toggle("🌐 Cari solusi di internet", True)
     use_ctx = o3.toggle("Sertakan hasil diagnosa/log/skor", True)
     shot = st.file_uploader("Foto/screenshot error (opsional)", type=["png", "jpg", "jpeg", "webp"])
@@ -341,29 +378,38 @@ with tabs[1]:
         if not api_key:
             st.error("Masukkan API key terlebih dahulu.")
         else:
-            try:
-                import anthropic
-                client = anthropic.Anthropic(api_key=api_key)
-                with st.chat_message("user"):
-                    st.markdown(q)
-                    if shot:
-                        st.image(shot, width=280)
-                text = (f"[Konteks perangkat]\n{build_context()}\n\n[Keluhan]\n{q}") if use_ctx else q
-                content = text
+            with st.chat_message("user"):
+                st.markdown(q)
                 if shot:
-                    content = [{"type": "image", "source": {"type": "base64", "media_type": shot.type or "image/png",
-                                                            "data": base64.b64encode(shot.getvalue()).decode()}},
-                               {"type": "text", "text": text}]
-                msgs = st.session_state["chat"][-12:] + [{"role": "user", "content": content}]
+                    st.image(shot, width=280)
+            text = (f"[Konteks perangkat]\n{build_context()}\n\n[Keluhan]\n{q}") if use_ctx else q
+            hist = st.session_state["chat"][-12:]
+            try:
                 with st.chat_message("assistant"):
-                    ans = st.write_stream(stream_ai(client, model, msgs, use_web))
+                    if is_gem:
+                        with st.spinner("AI sedang menganalisa..."):
+                            ans, src, note = gemini_chat(api_key, model, hist, text, shot, use_web)
+                        st.markdown(ans)
+                        if src:
+                            st.caption("Sumber: " + " • ".join(f"[{t}]({u})" for u, t in dict((u, t) for t, u in src).items()))
+                        if note:
+                            st.caption(note)
+                    else:
+                        import anthropic
+                        client = anthropic.Anthropic(api_key=api_key)
+                        content = text
+                        if shot:
+                            content = [{"type": "image", "source": {"type": "base64", "media_type": shot.type or "image/png",
+                                                                    "data": base64.b64encode(shot.getvalue()).decode()}},
+                                       {"type": "text", "text": text}]
+                        ans = st.write_stream(stream_ai(client, model, hist + [{"role": "user", "content": content}], use_web))
                 st.session_state["chat"] += [{"role": "user", "content": q}, {"role": "assistant", "content": ans}]
             except ImportError:
                 st.error("Modul `anthropic` belum terpasang. Pastikan ada di requirements.txt.")
             except Exception as e:
                 st.error(f"Gagal menghubungi AI: {type(e).__name__}: {str(e)[:300]}")
-                if use_web:
-                    st.caption("Jika error terkait tool/web search, matikan toggle 🌐 lalu coba lagi.")
+                if "429" in str(e):
+                    st.caption("Kuota gratis habis sementara (batas per menit/hari). Tunggu sebentar lalu coba lagi.")
 
 # ---------------------------------------------------------------- TAB 2
 with tabs[2]:
