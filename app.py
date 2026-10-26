@@ -317,8 +317,8 @@ def stream_ai(client, model, messages, web):
             yield t
 
 
-GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-4-argon (berbayar)"]
-GEMINI_FALLBACKS = ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.1-flash-lite"]
+GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-4-argon (berbayar)"]
+GEMINI_FALLBACKS = ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite"]
 
 
 def gemini_chat(key, model, history, text, img, web):
@@ -335,9 +335,19 @@ def gemini_chat(key, model, history, text, img, web):
     hdr = {"x-goog-api-key": key, "Content-Type": "application/json"}
     note = ""
 
+    class _Timeout:  # hasil semu saat Google terlalu lama menjawab
+        status_code = 408
+        text = "Timeout: Google terlalu lama menjawab"
+
+        def json(self):
+            return {"error": {"message": self.text}}
+
     def post(mdl, bd):
-        return requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{mdl}:generateContent",
-                             headers=hdr, json=bd, timeout=90)
+        try:
+            return requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{mdl}:generateContent",
+                                 headers=hdr, json=bd, timeout=75)
+        except requests.exceptions.Timeout:
+            return _Timeout()
 
     # coba model pilihan, lalu fallback bila model sudah dihentikan (404)
     r = None
@@ -348,9 +358,9 @@ def gemini_chat(key, model, history, text, img, web):
             r2 = post(mdl, nb)
             if r2.status_code == 200:
                 r, note = r2, "Pencarian internet tidak tersedia untuk key/model ini, jawaban tanpa web search."
-        if r.status_code not in (404, 429):
+        if r.status_code not in (404, 408, 429):
             if mdl != model and r.status_code == 200:
-                note = (note + f" Model `{model}` tidak tersedia/kuota habis, memakai `{mdl}`.").strip()
+                note = (note + f" Model `{model}` tidak tersedia/kuota habis/terlalu lambat, memakai `{mdl}`.").strip()
             break
     if r.status_code != 200:
         try:
