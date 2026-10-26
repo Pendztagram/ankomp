@@ -343,7 +343,7 @@ def gemini_chat(key, model, history, text, img, web):
     r = None
     for mdl in [model] + [m for m in GEMINI_FALLBACKS if m != model]:
         r = post(mdl, body)
-        if r.status_code != 200 and web and r.status_code not in (404, 429):  # ulang tanpa Google Search
+        if r.status_code != 200 and web and r.status_code != 404:  # ulang tanpa Google Search
             nb = {k: v for k, v in body.items() if k != "tools"}
             r2 = post(mdl, nb)
             if r2.status_code == 200:
