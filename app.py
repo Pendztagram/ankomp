@@ -317,6 +317,10 @@ def stream_ai(client, model, messages, web):
             yield t
 
 
+GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-4-argon (berbayar)"]
+GEMINI_FALLBACKS = ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.1-flash-lite"]
+
+
 def gemini_chat(key, model, history, text, img, web):
     """Panggil Gemini via REST (gratis lewat Google AI Studio). Return (teks, sumber, catatan)."""
     import requests
@@ -328,14 +332,26 @@ def gemini_chat(key, model, history, text, img, web):
     body = {"systemInstruction": {"parts": [{"text": AI_SYSTEM}]}, "contents": contents}
     if web:
         body["tools"] = [{"google_search": {}}]
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     hdr = {"x-goog-api-key": key, "Content-Type": "application/json"}
     note = ""
-    r = requests.post(url, headers=hdr, json=body, timeout=90)
-    if r.status_code != 200 and web:  # coba ulang tanpa Google Search (mungkin tidak masuk free tier)
-        body.pop("tools")
-        r = requests.post(url, headers=hdr, json=body, timeout=90)
-        note = "Pencarian internet tidak tersedia untuk key/model ini, jawaban tanpa web search."
+
+    def post(mdl, bd):
+        return requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{mdl}:generateContent",
+                             headers=hdr, json=bd, timeout=90)
+
+    # coba model pilihan, lalu fallback bila model sudah dihentikan (404)
+    r = None
+    for mdl in [model] + [m for m in GEMINI_FALLBACKS if m != model]:
+        r = post(mdl, body)
+        if r.status_code != 200 and web and r.status_code not in (404, 429):  # ulang tanpa Google Search
+            nb = {k: v for k, v in body.items() if k != "tools"}
+            r2 = post(mdl, nb)
+            if r2.status_code == 200:
+                r, note = r2, "Pencarian internet tidak tersedia untuk key/model ini, jawaban tanpa web search."
+        if r.status_code not in (404, 429):
+            if mdl != model and r.status_code == 200:
+                note = (note + f" Model `{model}` tidak tersedia/kuota habis, memakai `{mdl}`.").strip()
+            break
     if r.status_code != 200:
         try:
             msg = r.json()["error"]["message"]
@@ -362,7 +378,10 @@ with tabs[1]:
         if is_gem:
             st.caption("🔑 Ambil key gratis di https://aistudio.google.com/apikey (login Google, tanpa kartu kredit).")
     o1, o2, o3 = st.columns([2, 2, 2])
-    model = o1.text_input("Model", "gemini-2.5-flash-lite" if is_gem else safe(lambda: st.secrets["ANTHROPIC_MODEL"], "claude-sonnet-5-5"))
+    if is_gem:
+        model = o1.selectbox("Model", GEMINI_MODELS, help="Argon hanya untuk akun berbayar; key gratis akan ditolak.").split(" ")[0]
+    else:
+        model = o1.text_input("Model", safe(lambda: st.secrets["ANTHROPIC_MODEL"], "claude-sonnet-5-5"))
     use_web = o2.toggle("🌐 Cari solusi di internet", True)
     use_ctx = o3.toggle("Sertakan hasil diagnosa/log/skor", True)
     shot = st.file_uploader("Foto/screenshot error (opsional)", type=["png", "jpg", "jpeg", "webp"])
